@@ -1,0 +1,30 @@
+node_modules
+dist
+.env
+*.log
+
+# temporary files
+tmp/
+uploads/
+
+# sqlite files (offline packs)
+*.sqlite
+
+# coverage
+coverage/
+.nyc_output/
+
+# editor/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+
+# macOS
+.DS_Store
+
+# logs
+logs/
+
+# OS files
+thumbs.db
+
