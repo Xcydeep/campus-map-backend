@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
+import { Session } from './Session';
 
 @Entity()
 export class User {
@@ -13,6 +14,10 @@ export class User {
   
   @Column({ nullable: true })
   name?: string; // new user name field
+
+  @OneToMany(() => Session, (s) => s.user)
+  sessions!: Session[];
+
 
   @Column({ default: false })
   isAdmin!: boolean;
