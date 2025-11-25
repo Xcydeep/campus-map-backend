@@ -1,24 +1,65 @@
 import { Request, Response } from 'express';
 import { pgDataSource, sqliteDataSource } from '../loaders/database';
 import { Place } from '../models/Place';
+import { PlaceLite } from '../models/PlaceLite';
 import { Category } from '../models/Category';
 import { Instructor } from '../models/Instructor';
 import { badRequest, handleError, notFound } from '../utils/errorHandler';
 
+// Fonction utilitaire pour vérifier la connectivité PostgreSQL
+async function isPostgreSQLAvailable(): Promise<boolean> {
+  try {
+    if (!pgDataSource?.isInitialized) {
+      return false;
+    }
+    
+    // Test simple de connexion
+    await pgDataSource.query('SELECT 1');
+    return true;
+  } catch (error) {
+    console.warn('PostgreSQL not available, falling back to SQLite');
+    return false;
+  }
+}
+
 export async function getPlaces(req: Request, res: Response) {
   try {
-    // EXIGER PostgreSQL pour les relations complètes
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching places with relations' 
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (postgresAvailable) {
+      // Récupération depuis PostgreSQL avec relations complètes
+      const pgRepo = pgDataSource!.getRepository(Place);
+      const places = await pgRepo.find({ 
+        relations: ['category', 'instructor', 'courses'] 
       });
+      return res.json(places);
+    } else {
+      // Récupération depuis SQLite (version allégée)
+      const sqliteRepo = sqliteDataSource.getRepository(PlaceLite);
+      const placesLite = await sqliteRepo.find({ 
+        relations: ['category'] 
+      });
+      
+      // Conversion vers le format standard pour la compatibilité
+      const formattedPlaces = placesLite.map(place => ({
+        id: place.id,
+        name: place.name,
+        description: null,
+        photos: null,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        category: place.category,
+        officeOwner: null,
+        capacity: null,
+        building: null,
+        floor: null,
+        code: null,
+        instructor: null,
+        courses: []
+      }));
+      
+      return res.json(formattedPlaces);
     }
-
-    const pgRepo = pgDataSource.getRepository(Place);
-    const places = await pgRepo.find({ 
-      relations: ['category', 'instructor', 'courses'] 
-    });
-    res.json(places);
   } catch (err) {
     handleError(res, err, 'Failed to fetch places');
   }
@@ -27,22 +68,46 @@ export async function getPlaces(req: Request, res: Response) {
 export async function getPlaceById(req: Request, res: Response) {
   try {
     const { id } = req.params;
+    const postgresAvailable = await isPostgreSQLAvailable();
     
-    // EXIGER PostgreSQL pour les relations complètes
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching place details' 
+    if (postgresAvailable) {
+      const pgRepo = pgDataSource!.getRepository(Place);
+      const place = await pgRepo.findOne({ 
+        where: { id },
+        relations: ['category', 'instructor', 'courses'] 
       });
+      
+      if (!place) return notFound(res, 'Place not found');
+      return res.json(place);
+    } else {
+      const sqliteRepo = sqliteDataSource.getRepository(PlaceLite);
+      const placeLite = await sqliteRepo.findOne({ 
+        where: { id },
+        relations: ['category'] 
+      });
+      
+      if (!placeLite) return notFound(res, 'Place not found');
+      
+      // Conversion vers le format standard
+      const formattedPlace = {
+        id: placeLite.id,
+        name: placeLite.name,
+        description: null,
+        photos: null,
+        latitude: placeLite.latitude,
+        longitude: placeLite.longitude,
+        category: placeLite.category,
+        officeOwner: null,
+        capacity: null,
+        building: null,
+        floor: null,
+        code: null,
+        instructor: null,
+        courses: []
+      };
+      
+      return res.json(formattedPlace);
     }
-
-    const pgRepo = pgDataSource.getRepository(Place);
-    const place = await pgRepo.findOne({ 
-      where: { id },
-      relations: ['category', 'instructor', 'courses'] 
-    });
-    
-    if (!place) return notFound(res, 'Place not found');
-    res.json(place);
   } catch (err) {
     handleError(res, err, 'Failed to fetch place');
   }
@@ -69,8 +134,9 @@ export async function createPlace(req: Request, res: Response) {
       return badRequest(res, 'Name, latitude and longitude are required');
     }
 
-    // EXIGER les deux bases de données
-    if (!pgDataSource?.isInitialized) {
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (!postgresAvailable) {
       return res.status(500).json({ 
         message: 'PostgreSQL required for place creation' 
       });
@@ -81,7 +147,7 @@ export async function createPlace(req: Request, res: Response) {
 
     // Gestion de la catégorie - Vérification dans les deux bases
     if (category) {
-      const pgCatRepo = pgDataSource.getRepository(Category);
+      const pgCatRepo = pgDataSource!.getRepository(Category);
       const sqliteCatRepo = sqliteDataSource.getRepository(Category);
 
       pgCat = await pgCatRepo.findOne({ where: { name: category } });
@@ -102,61 +168,45 @@ export async function createPlace(req: Request, res: Response) {
     }
 
     let pgInstructor = null;
-    let sqliteInstructor = null;
 
-    // Gestion de l'instructeur - Vérification dans les deux bases
+    // Gestion de l'instructeur - PostgreSQL seulement
     if (instructorId) {
-      const pgInstructorRepo = pgDataSource.getRepository(Instructor);
-      const sqliteInstructorRepo = sqliteDataSource.getRepository(Instructor);
-
+      const pgInstructorRepo = pgDataSource!.getRepository(Instructor);
       pgInstructor = await pgInstructorRepo.findOne({ where: { id: instructorId } });
-      sqliteInstructor = await sqliteInstructorRepo.findOne({ where: { id: instructorId } });
 
-      if (!pgInstructor || !sqliteInstructor) {
-        return notFound(res, 'Instructor not found in both databases');
+      if (!pgInstructor) {
+        return notFound(res, 'Instructor not found');
       }
     }
 
     // Création dans PostgreSQL
-    const pgRepo = pgDataSource.getRepository(Place);
-    const pgPlaceData = {
+    const pgRepo = pgDataSource!.getRepository(Place);
+    const pgPlace = pgRepo.create({
       name,
       description,
       latitude,
       longitude,
-      category: pgCat,
+      category: pgCat || undefined,
       officeOwner,
       capacity,
       building,
       floor,
       code,
-      instructor: pgInstructor
-    };
-
-    const pgPlace = pgRepo.create(pgPlaceData);
+      instructor: pgInstructor || undefined
+    });
     const savedPgPlace = await pgRepo.save(pgPlace);
 
-    // Création dans SQLite
-    const sqliteRepo = sqliteDataSource.getRepository(Place);
-    const sqlitePlaceData = {
-      id: savedPgPlace.id, // Même ID
-      name,
-      description,
-      latitude,
-      longitude,
-      category: sqliteCat,
-      officeOwner,
-      capacity,
-      building,
-      floor,
-      code,
-      instructor: sqliteInstructor // ✅ Maintenant disponible dans SQLite
-    };
-    
-    const sqlitePlace = sqliteRepo.create(sqlitePlaceData);
-    await sqliteRepo.save(sqlitePlace);
+    // Création dans SQLite (version allégée)
+    const sqlitePlaceRepo = sqliteDataSource.getRepository(PlaceLite);
+    const sqlitePlace = sqlitePlaceRepo.create({
+      id: savedPgPlace.id,
+      name: savedPgPlace.name,
+      latitude: savedPgPlace.latitude,
+      longitude: savedPgPlace.longitude,
+      category: sqliteCat || undefined
+    });
+    await sqlitePlaceRepo.save(sqlitePlace);
 
-    console.log(`✅ Place created in both databases: ${savedPgPlace.id}`);
     res.status(201).json(savedPgPlace);
   } catch (err) {
     handleError(res, err, 'Failed to create place');
@@ -180,43 +230,36 @@ export async function updatePlace(req: Request, res: Response) {
       instructorId
     } = req.body;
 
-    // EXIGER les deux bases de données
-    if (!pgDataSource?.isInitialized) {
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (!postgresAvailable) {
       return res.status(500).json({ 
         message: 'PostgreSQL required for place update' 
       });
     }
 
     // Vérifier l'existence dans les deux bases
-    const pgRepo = pgDataSource.getRepository(Place);
-    const sqliteRepo = sqliteDataSource.getRepository(Place);
+    const pgRepo = pgDataSource!.getRepository(Place);
+    const sqlitePlaceRepo = sqliteDataSource.getRepository(PlaceLite);
 
     const pgPlace = await pgRepo.findOne({ 
       where: { id }, 
       relations: ['category', 'instructor'] 
     });
-    const sqlitePlace = await sqliteRepo.findOne({ 
+    const sqlitePlace = await sqlitePlaceRepo.findOne({ 
       where: { id }, 
-      relations: ['category', 'instructor'] 
+      relations: ['category'] 
     });
 
     if (!pgPlace && !sqlitePlace) {
       return notFound(res, 'Place not found in any database');
     }
 
-    if (pgPlace && !sqlitePlace) {
-      return notFound(res, 'Place found in PostgreSQL but not in SQLite');
-    }
-
-    if (!pgPlace && sqlitePlace) {
-      return notFound(res, 'Place found in SQLite but not in PostgreSQL');
-    }
-
     // Gestion de la catégorie
     let pgCat = null;
     let sqliteCat = null;
     if (category) {
-      const pgCatRepo = pgDataSource.getRepository(Category);
+      const pgCatRepo = pgDataSource!.getRepository(Category);
       const sqliteCatRepo = sqliteDataSource.getRepository(Category);
 
       pgCat = await pgCatRepo.findOne({ where: { name: category } });
@@ -227,55 +270,52 @@ export async function updatePlace(req: Request, res: Response) {
       }
     }
 
-    // Gestion de l'instructeur
+    // Gestion de l'instructeur (PostgreSQL seulement)
     let pgInstructor = null;
-    let sqliteInstructor = null;
     if (instructorId) {
-      const pgInstructorRepo = pgDataSource.getRepository(Instructor);
-      const sqliteInstructorRepo = sqliteDataSource.getRepository(Instructor);
-
+      const pgInstructorRepo = pgDataSource!.getRepository(Instructor);
       pgInstructor = await pgInstructorRepo.findOne({ where: { id: instructorId } });
-      sqliteInstructor = await sqliteInstructorRepo.findOne({ where: { id: instructorId } });
 
-      if (!pgInstructor || !sqliteInstructor) {
-        return notFound(res, 'Instructor not found in both databases');
+      if (!pgInstructor) {
+        return notFound(res, 'Instructor not found');
       }
     }
 
     // Mise à jour PostgreSQL
-    pgRepo.merge(pgPlace!, {
-      name,
-      description,
-      latitude,
-      longitude,
-      officeOwner,
-      capacity,
-      building,
-      floor,
-      code
-    });
-    if (category !== undefined) pgPlace!.category = pgCat;
-    if (instructorId !== undefined) pgPlace!.instructor = pgInstructor;
-    await pgRepo.save(pgPlace!);
+    if (pgPlace) {
+      pgRepo.merge(pgPlace, {
+        name,
+        description,
+        latitude,
+        longitude,
+        officeOwner,
+        capacity,
+        building,
+        floor,
+        code
+      });
+      
+      if (category !== undefined && pgCat) pgPlace.category = pgCat;
+      if (instructorId !== undefined) pgPlace.instructor = pgInstructor || undefined;
+      
+      await pgRepo.save(pgPlace);
+    }
 
-    // Mise à jour SQLite
-    sqliteRepo.merge(sqlitePlace!, {
-      name,
-      description,
-      latitude,
-      longitude,
-      officeOwner,
-      capacity,
-      building,
-      floor,
-      code
-    });
-    if (category !== undefined) sqlitePlace!.category = sqliteCat;
-    if (instructorId !== undefined) sqlitePlace!.instructor = sqliteInstructor;
-    await sqliteRepo.save(sqlitePlace!);
+    // Mise à jour SQLite (champs allégés seulement)
+    if (sqlitePlace) {
+      sqlitePlaceRepo.merge(sqlitePlace, {
+        name,
+        latitude,
+        longitude
+      });
+      
+      if (category !== undefined && sqliteCat) sqlitePlace.category = sqliteCat;
+      
+      await sqlitePlaceRepo.save(sqlitePlace);
+    }
 
     console.log(`✅ Place updated in both databases: ${id}`);
-    res.json(pgPlace);
+    res.json(pgPlace || sqlitePlace);
   } catch (err) {
     handleError(res, err, 'Failed to update place');
   }
@@ -283,23 +323,58 @@ export async function updatePlace(req: Request, res: Response) {
 
 export async function getClassrooms(req: Request, res: Response) {
   try {
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ message: 'PostgreSQL DataSource is not initialized' });
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (postgresAvailable) {
+      const pgRepo = pgDataSource!.getRepository(Place);
+      const pgCatRepo = pgDataSource!.getRepository(Category);
+      
+      const classroomCategory = await pgCatRepo.findOne({ where: { name: 'Salle de cours' } });
+      if (!classroomCategory) {
+        return res.json([]);
+      }
+      
+      const classrooms = await pgRepo.find({
+        where: { category: { id: classroomCategory.id } },
+        relations: ['courses', 'courses.instructor']
+      });
+      
+      return res.json(classrooms);
+    } else {
+      // Fallback SQLite - récupération basique
+      const sqliteRepo = sqliteDataSource.getRepository(PlaceLite);
+      const sqliteCatRepo = sqliteDataSource.getRepository(Category);
+      
+      const classroomCategory = await sqliteCatRepo.findOne({ where: { name: 'Salle de cours' } });
+      if (!classroomCategory) {
+        return res.json([]);
+      }
+      
+      const classroomsLite = await sqliteRepo.find({
+        where: { category: { id: classroomCategory.id } },
+        relations: ['category']
+      });
+      
+      // Conversion vers le format standard
+      const formattedClassrooms = classroomsLite.map(classroom => ({
+        id: classroom.id,
+        name: classroom.name,
+        description: null,
+        photos: null,
+        latitude: classroom.latitude,
+        longitude: classroom.longitude,
+        category: classroom.category,
+        officeOwner: null,
+        capacity: null,
+        building: null,
+        floor: null,
+        code: null,
+        instructor: null,
+        courses: []
+      }));
+      
+      return res.json(formattedClassrooms);
     }
-    const pgRepo = pgDataSource.getRepository(Place);
-    const pgCatRepo = pgDataSource.getRepository(Category);
-    
-    const classroomCategory = await pgCatRepo.findOne({ where: { name: 'Salle de cours' } });
-    if (!classroomCategory) {
-      return res.json([]);
-    }
-    
-    const classrooms = await pgRepo.find({
-      where: { category: { id: classroomCategory.id } },
-      relations: ['courses', 'courses.instructor']
-    });
-    
-    res.json(classrooms);
   } catch (err) {
     handleError(res, err, 'Failed to fetch classrooms');
   }
@@ -307,23 +382,57 @@ export async function getClassrooms(req: Request, res: Response) {
 
 export async function getOffices(req: Request, res: Response) {
   try {
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ message: 'PostgreSQL DataSource is not initialized' });
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (postgresAvailable) {
+      const pgRepo = pgDataSource!.getRepository(Place);
+      const pgCatRepo = pgDataSource!.getRepository(Category);
+      
+      const officeCategory = await pgCatRepo.findOne({ where: { name: 'Bureau' } });
+      if (!officeCategory) {
+        return res.json([]);
+      }
+      
+      const offices = await pgRepo.find({
+        where: { category: { id: officeCategory.id } },
+        relations: ['instructor']
+      });
+      
+      return res.json(offices);
+    } else {
+      // Fallback SQLite
+      const sqliteRepo = sqliteDataSource.getRepository(PlaceLite);
+      const sqliteCatRepo = sqliteDataSource.getRepository(Category);
+      
+      const officeCategory = await sqliteCatRepo.findOne({ where: { name: 'Bureau' } });
+      if (!officeCategory) {
+        return res.json([]);
+      }
+      
+      const officesLite = await sqliteRepo.find({
+        where: { category: { id: officeCategory.id } },
+        relations: ['category']
+      });
+      
+      const formattedOffices = officesLite.map(office => ({
+        id: office.id,
+        name: office.name,
+        description: null,
+        photos: null,
+        latitude: office.latitude,
+        longitude: office.longitude,
+        category: office.category,
+        officeOwner: null,
+        capacity: null,
+        building: null,
+        floor: null,
+        code: null,
+        instructor: null,
+        courses: []
+      }));
+      
+      return res.json(formattedOffices);
     }
-    const pgRepo = pgDataSource.getRepository(Place);
-    const pgCatRepo = pgDataSource.getRepository(Category);
-    
-    const officeCategory = await pgCatRepo.findOne({ where: { name: 'Bureau' } });
-    if (!officeCategory) {
-      return res.json([]);
-    }
-    
-    const offices = await pgRepo.find({
-      where: { category: { id: officeCategory.id } },
-      relations: ['instructor']
-    });
-    
-    res.json(offices);
   } catch (err) {
     handleError(res, err, 'Failed to fetch offices');
   }
@@ -331,11 +440,16 @@ export async function getOffices(req: Request, res: Response) {
 
 export async function getOfficeByInstructor(req: Request, res: Response) {
   try {
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ message: 'PostgreSQL DataSource is not initialized' });
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (!postgresAvailable) {
+      return res.status(500).json({ 
+        message: 'PostgreSQL required for instructor office lookup' 
+      });
     }
-    const pgRepo = pgDataSource.getRepository(Place);
-    const pgCatRepo = pgDataSource.getRepository(Category);
+    
+    const pgRepo = pgDataSource!.getRepository(Place);
+    const pgCatRepo = pgDataSource!.getRepository(Category);
     
     const { instructorName } = req.params;
     
@@ -362,22 +476,22 @@ export async function getOfficeByInstructor(req: Request, res: Response) {
   }
 }
 
-
 export async function deletePlace(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // EXIGER les deux bases de données
-    if (!pgDataSource?.isInitialized) {
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (!postgresAvailable) {
       return res.status(500).json({ 
         message: 'PostgreSQL required for place deletion' 
       });
     }
 
-    const pgRepo = pgDataSource.getRepository(Place);
-    const sqliteRepo = sqliteDataSource.getRepository(Place);
+    const pgRepo = pgDataSource!.getRepository(Place);
+    const sqliteRepo = sqliteDataSource.getRepository(PlaceLite);
 
-    // Vérifier l'existence dans les deux bases
+    // Vérifier l'existence dans au moins une base
     const pgPlace = await pgRepo.findOne({ where: { id } });
     const sqlitePlace = await sqliteRepo.findOne({ where: { id } });
 
@@ -404,10 +518,15 @@ export async function deletePlace(req: Request, res: Response) {
 
 export async function uploadPlacePhotos(req: Request, res: Response) {
   try {
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ message: 'PostgreSQL DataSource is not initialized' });
+    const postgresAvailable = await isPostgreSQLAvailable();
+    
+    if (!postgresAvailable) {
+      return res.status(500).json({ 
+        message: 'PostgreSQL required for photo upload' 
+      });
     }
-    const pgRepo = pgDataSource.getRepository(Place);
+    
+    const pgRepo = pgDataSource!.getRepository(Place);
     const { id } = req.params;
     const place = await pgRepo.findOne({ where: { id } });
     if (!place) return notFound(res, 'Place not found');

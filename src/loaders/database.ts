@@ -6,7 +6,9 @@ dotenv.config();
 
 // Import des entités
 import { Place } from '../models/Place';
+import { PlaceLite } from '../models/PlaceLite';
 import { Category } from '../models/Category';
+import { CategoryLite } from '../models/CategoryLite'; // Nouveau
 import { Course } from '../models/Course';
 import { User } from '../models/User';
 import { Device } from '../models/Device';
@@ -25,13 +27,13 @@ function ensureDataDir() {
   return dataDir;
 }
 
-// Configuration SQLite (SEULEMENT Category et Place)
+// Configuration SQLite (SEULEMENT entités légères)
 const sqliteConfig = {
   type: 'sqlite' as const,
   database: path.join(ensureDataDir(), 'mapdang.sqlite'),
-  synchronize: process.env.NODE_ENV === 'development', // sync seulement en dev
+  synchronize: process.env.NODE_ENV === 'development',
   logging: process.env.NODE_ENV === 'development',
-  entities: [Place, Category], // SEULEMENT ces 2 entités pour SQLite
+  entities: [PlaceLite, CategoryLite], // SEULEMENT entités légères
 };
 
 // Configuration PostgreSQL (toutes les entités)
@@ -41,11 +43,12 @@ if (DATABASE_URL && typeof DATABASE_URL === 'string' && DATABASE_URL.trim() !== 
   const postgresConfig = {
     type: 'postgres' as const,
     url: DATABASE_URL,
-    synchronize: process.env.NODE_ENV === 'development', // sync seulement en dev
+    synchronize: process.env.NODE_ENV === 'development',
     logging: process.env.NODE_ENV === 'development',
     entities: [
       Place, 
-      Category, 
+      Category,     // Category complète pour PostgreSQL
+      CategoryLite, // CategoryLite aussi pour PostgreSQL (optionnel)
       Course, 
       User, 
       Device, 
@@ -54,8 +57,9 @@ if (DATABASE_URL && typeof DATABASE_URL === 'string' && DATABASE_URL.trim() !== 
       Edge, 
       Instructor, 
       Schedule, 
-      Signalement
-    ], // TOUTES les entités
+      Signalement,
+      PlaceLite
+    ],
   };
   pgDataSource = new DataSource(postgresConfig);
 } else {
@@ -76,7 +80,7 @@ export async function connectDatabases() {
     }
     
     await Promise.all(initPromises);
-    console.log('✅ SQLite Database connected (Category & Place only)');
+    console.log('✅ SQLite Database connected (PlaceLite & CategoryLite only)');
     if (pgDataSource?.isInitialized) {
       console.log('✅ PostgreSQL Database connected (all entities)');
     }

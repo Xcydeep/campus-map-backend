@@ -41,7 +41,10 @@ export class Place {
   @Column({ nullable: true })
   code?: string;
 
-  @ManyToOne(() => Instructor, (instructor) => instructor.offices, { nullable: true, eager: true })
+  @ManyToOne(() => Instructor, (instructor) => instructor.places, {
+    nullable: true,
+    eager: true,
+  })
   instructor?: Instructor;
 
   @OneToMany(() => Course, (course) => course.place)

@@ -19,9 +19,9 @@ export class Instructor {
   @Column({ nullable: true })
   department?: string;
 
-  @OneToMany(() => Course, (c: Course) => c.instructor)
+  @OneToMany(() => Course, (course) => course.instructor)
   courses?: Course[];
 
   @OneToMany(() => Place, (place) => place.instructor)
-  offices?: Place[];
+  places?: Place[];
 }
