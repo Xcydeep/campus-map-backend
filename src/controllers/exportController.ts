@@ -64,7 +64,7 @@ export async function exportOfflinePack(req: Request, res: Response) {
         id: i.id,
         name: i.name,
         email: i.email,
-        offices: i.offices?.map(o => ({
+        offices: i.places?.map(o => ({
           id: o.id,
           name: o.name,
           code: o.code
