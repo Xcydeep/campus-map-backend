@@ -8,7 +8,7 @@ router.post('/register', registerDevice);
 router.post('/session', startSession);
 router.post('/session/:sessionId/end', endSession);
 
-// Real-time location updates (authenticated)
+// Real-time location updates 
 router.post('/location', requireAuth, postLocation);
 // SSE stream to receive updates for a deviceId
 router.get('/stream/:deviceId', requireAuth, streamLocations);

@@ -3,20 +3,25 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { createApp } from './app';
-
 import { connectDatabases } from './loaders/database';
 
-const port = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4000;
 
 async function main() {
-  const app = createApp();
-  await connectDatabases();
-  app.listen(port, () => {
-    console.log(`MapDang backend running on http://localhost:${port}`);
-  });
+  try {
+    // Connexion aux bases de données
+    await connectDatabases();
+
+    // Création de l'application Express
+    const app = createApp();
+
+    app.listen(PORT, () => {
+      console.log(`MapDang backend running on http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('Fatal error starting server:', err);
+    process.exit(1);
+  }
 }
 
-main().catch((err) => {
-  console.error('Fatal error', err);
-  process.exit(1);
-});
+main();

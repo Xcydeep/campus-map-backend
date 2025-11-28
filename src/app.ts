@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 
+
 import placesRouter from './routes/places';
 import healthRouter from './routes/health';
 import adminRouter from './routes/admin';
@@ -14,34 +15,45 @@ import shareRouter from './routes/share';
 import devicesRouter from './routes/devices';
 import routeRouter from './routes/route';
 import signalementsRouter from './routes/signalements';
+import categoryRouter from './routes/categories';
+import instructorRouter from './routes/instructors';
 
 export function createApp() {
   const app = express();
+  
+  // Middleware
   app.use(helmet());
-  app.use(cors());
-  app.use(express.json());
+  app.use(cors({
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    credentials: true
+  }));
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true }));
   app.use(morgan('dev'));
 
+  
   app.use('/health', healthRouter);
+  
+ 
   app.use('/api/places', placesRouter);
+  app.use('/api/categories', categoryRouter);
+  app.use('/api/instructors', instructorRouter); 
+ 
   app.use('/api/admin', adminRouter);
   app.use('/api/courses', coursesRouter);
   app.use('/api/schedules', schedulesRouter);
   app.use('/api/search', searchRouter);
-  // auth
   app.use('/api/auth', authRouter);
-  // public share route
-  app.use('/share', shareRouter);
-  // devices
   app.use('/api/devices', devicesRouter);
-  // routing
   app.use('/api/route', routeRouter);
-  // signalements
   app.use('/api/signalements', signalementsRouter);
+  
+  // Public share route
+  app.use('/api/share', shareRouter);
 
+ 
   app.use((req, res) => {
-    // typed 404 handler
-    (res as import('express').Response).status(404).json({ message: 'Not Found' });
+    res.status(404).json({ message: 'Not Found' });
   });
 
   return app;

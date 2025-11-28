@@ -1,4 +1,4 @@
-import { DataSource } from 'typeorm';
+import { DataSource, Repository, ObjectLiteral } from 'typeorm';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
@@ -67,6 +67,22 @@ if (DATABASE_URL && typeof DATABASE_URL === 'string' && DATABASE_URL.trim() !== 
 }
 
 const sqliteDataSource = new DataSource(sqliteConfig);
+
+// Fonction utilitaire pour obtenir le repository PostgreSQL
+export function getPgRepo<Entity extends ObjectLiteral>(entity: { new (): Entity }): Repository<Entity> {
+  if (!pgDataSource || !pgDataSource.isInitialized) {
+    throw new Error('PostgreSQL DataSource is not initialized');
+  }
+  return pgDataSource.getRepository(entity);
+}
+
+// Fonction utilitaire pour obtenir le repository SQLite
+export function getSqliteRepo<Entity extends ObjectLiteral>(entity: { new (): Entity }): Repository<Entity> {
+  if (!sqliteDataSource || !sqliteDataSource.isInitialized) {
+    throw new Error('SQLite DataSource is not initialized');
+  }
+  return sqliteDataSource.getRepository(entity);
+}
 
 // Fonction pour connecter les bases de données
 export async function connectDatabases() {

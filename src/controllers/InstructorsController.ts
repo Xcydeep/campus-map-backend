@@ -1,339 +1,632 @@
 import { Request, Response } from 'express';
 import { pgDataSource, sqliteDataSource } from '../loaders/database';
 import { Instructor } from '../models/Instructor';
-import { badRequest, conflict, handleError, notFound } from '../utils/errorHandler';
+import { Course } from '../models/Course';
+import { Place } from '../models/Place';
+import { 
+  badRequest, 
+  conflict, 
+  handleError, 
+  notFound,
+  serviceUnavailable 
+} from '../utils/errorHandler';
 
-// GET /api/instructors - Lister tous les instructeurs
+// Interface pour les erreurs typées
+interface DatabaseError {
+  code?: string;
+  message?: string;
+  detail?: string;
+  constraint?: string;
+}
+
+// Type guard pour vérifier le type d'erreur
+function isDatabaseError(error: unknown): error is DatabaseError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    ('code' in error || 'detail' in error || 'constraint' in error)
+  );
+}
+
+// Fonction pour extraire le message d'erreur de manière sécurisée
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (isDatabaseError(error)) {
+    return error.message || 'Database error occurred';
+  }
+  return 'Unknown error occurred';
+}
+
+// -------------------------------------------------------
+//   LIST INSTRUCTORS
+// -------------------------------------------------------
 export async function listInstructors(req: Request, res: Response) {
   try {
-    // EXIGER PostgreSQL pour les relations complètes
+    // Vérifier disponibilité PostgreSQL
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching instructors with relations' 
-      });
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
     const instructors = await pgRepo.find({
-      relations: ['courses', 'office'] // Relations avec les cours et le bureau
+      relations: ['courses', 'places'], // CORRECTION: 'places' au lieu de 'office'
+      order: { name: 'ASC' }
     });
     
-    res.json(instructors);
-  } catch (err) {
-    handleError(res, err, 'Failed to fetch instructors');
+    console.log(`✅ ${instructors.length} instructeurs récupérés depuis PostgreSQL`);
+    return res.status(200).json({
+      success: true,
+      message: `Liste des instructeurs récupérée avec succès (${instructors.length} éléments)`,
+      data: instructors,
+      count: instructors.length
+    });
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la récupération des instructeurs:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur interne du serveur lors de la récupération des instructeurs',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined,
+      data: []
+    });
   }
 }
 
-// GET /api/instructors/:id - Récupérer un instructeur par ID
+// -------------------------------------------------------
+//   GET INSTRUCTOR BY ID
+// -------------------------------------------------------
 export async function getInstructorById(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // EXIGER PostgreSQL pour les relations complètes
+    // Validation ID
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
+    }
+
+    // Vérifier disponibilité PostgreSQL
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching instructor details' 
-      });
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
     const instructor = await pgRepo.findOne({
       where: { id },
-      relations: ['courses', 'office', 'courses.place'] // Relations complètes
+      relations: ['courses', 'places', 'courses.place'] // CORRECTION: 'places' au lieu de 'office'
     });
 
     if (!instructor) {
-      return notFound(res, 'Instructor not found');
+      console.warn(`⚠️ Instructeur non trouvé - ID: ${id}`);
+      return notFound(res, `Instructeur avec l'ID "${id}" introuvable.`);
     }
 
-    res.json(instructor);
-  } catch (err) {
-    handleError(res, err, 'Failed to fetch instructor');
+    console.log(`✅ Instructeur récupéré - ID: ${id}`);
+    return res.status(200).json({
+      success: true,
+      message: 'Instructeur récupéré avec succès',
+      data: instructor
+    });
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la récupération de l\'instructeur:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur interne du serveur lors de la récupération de l\'instructeur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
+    });
   }
 }
 
-// GET /api/instructors/search/:name - Rechercher un instructeur par nom
+// -------------------------------------------------------
+//   GET INSTRUCTOR BY NAME
+// -------------------------------------------------------
 export async function getInstructorByName(req: Request, res: Response) {
   try {
     const { name } = req.params;
 
-    if (!name) {
-      return badRequest(res, 'Instructor name is required for search');
+    // Validation nom
+    if (!name || typeof name !== 'string') {
+      return badRequest(res, 'Nom d\'instructeur requis pour la recherche.');
     }
 
-    // EXIGER PostgreSQL pour la recherche avec relations
+    const decodedName = decodeURIComponent(name);
+
+    // Vérifier disponibilité PostgreSQL
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for instructor search' 
-      });
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
     const instructor = await pgRepo.findOne({
-      where: { name },
-      relations: ['courses', 'office']
+      where: { name: decodedName },
+      relations: ['courses', 'places'] // CORRECTION: 'places' au lieu de 'office'
     });
 
     if (!instructor) {
-      return notFound(res, `Instructor not found: ${name}`);
+      console.warn(`⚠️ Instructeur non trouvé - Nom: "${decodedName}"`);
+      return notFound(res, `Instructeur "${decodedName}" introuvable.`);
     }
 
-    res.json(instructor);
-  } catch (err) {
-    handleError(res, err, 'Failed to search instructor');
+    console.log(`✅ Instructeur trouvé - Nom: "${decodedName}"`);
+    return res.status(200).json({
+      success: true,
+      message: `Instructeur "${decodedName}" trouvé avec succès`,
+      data: instructor
+    });
+  } catch (err: unknown) {
+    console.error('❌ Erreur lors de la recherche d\'instructeur par nom:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la recherche d\'instructeur par nom',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
+    });
   }
 }
 
-// POST /api/instructors - Créer un nouvel instructeur
+// -------------------------------------------------------
+//   CREATE INSTRUCTOR
+// -------------------------------------------------------
 export async function createInstructor(req: Request, res: Response) {
   try {
     const { name, email, phone, department } = req.body;
 
-    // Validation
-    if (!name) {
-      return badRequest(res, 'Instructor name is required');
+    // -------- VALIDATIONS RENFORCÉES --------
+    if (!name || typeof name !== 'string') {
+      return badRequest(res, 'Le nom de l\'instructeur est requis et doit être une chaîne de caractères.');
     }
 
-    // EXIGER les deux bases de données
+    const trimmedName = name.trim();
+    if (trimmedName.length < 2) {
+      return badRequest(res, 'Le nom de l\'instructeur doit contenir au moins 2 caractères.');
+    }
+
+    if (trimmedName.length > 100) {
+      return badRequest(res, 'Le nom de l\'instructeur ne peut pas dépasser 100 caractères.');
+    }
+
+    // Validation email si fourni
+    if (email && typeof email === 'string') {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return badRequest(res, 'Format d\'email invalide.');
+      }
+    }
+
+    // Validation téléphone si fourni
+    if (phone && typeof phone === 'string' && phone.length > 20) {
+      return badRequest(res, 'Le numéro de téléphone ne peut pas dépasser 20 caractères.');
+    }
+
+    // Vérifier disponibilité PostgreSQL SEULEMENT
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for instructor creation' 
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
+    }
+
+    const pgRepo = pgDataSource.getRepository(Instructor);
+
+    // -------- VÉRIFICATION DOUBLON --------
+    const existingPgInstructor = await pgRepo.findOne({ where: { name: trimmedName } });
+    if (existingPgInstructor) {
+      console.warn(`⚠️ Tentative de création d'un instructeur existant dans PostgreSQL: "${trimmedName}"`);
+      return conflict(res, `Un instructeur avec le nom "${trimmedName}" existe déjà.`);
+    }
+
+    // -------- CRÉATION POSTGRESQL SEULEMENT --------
+    console.log(`🔄 Début de création de l'instructeur: "${trimmedName}"`);
+    const pgInstructor = pgRepo.create({ 
+      name: trimmedName, 
+      email: email?.trim() || undefined, 
+      phone: phone?.trim() || undefined, 
+      department: department?.trim() || undefined 
+    });
+    const savedPgInstructor = await pgRepo.save(pgInstructor);
+    console.log(`✅ Instructeur créé dans PostgreSQL - ID: ${savedPgInstructor.id}`);
+
+    // -------- RÉPONSE DE SUCCÈS --------
+    console.log(`🎉 Instructeur créé avec succès: "${trimmedName}" (ID: ${savedPgInstructor.id})`);
+    return res.status(201).json({
+      success: true,
+      message: `Instructeur "${trimmedName}" créé avec succès`,
+      data: savedPgInstructor,
+      details: {
+        id: savedPgInstructor.id,
+        name: savedPgInstructor.name,
+        createdIn: ['postgresql'],
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la création de l\'instructeur:', err);
+    
+    if (isDatabaseError(err) && err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Un instructeur avec ce nom existe déjà',
+        error: 'DUPLICATE_INSTRUCTOR'
       });
     }
 
-    // Vérifier l'existence dans PostgreSQL
-    const pgRepo = pgDataSource.getRepository(Instructor);
-    const existingPgInstructor = await pgRepo.findOne({ where: { name } });
-    if (existingPgInstructor) {
-      return conflict(res, 'Instructor already exists in PostgreSQL');
-    }
-
-    // Vérifier l'existence dans SQLite
-    const sqliteRepo = sqliteDataSource.getRepository(Instructor);
-    const existingSqliteInstructor = await sqliteRepo.findOne({ where: { name } });
-    if (existingSqliteInstructor) {
-      return conflict(res, 'Instructor already exists in SQLite');
-    }
-
-    // Création dans PostgreSQL
-    const pgInstructor = pgRepo.create({ name, email, phone, department });
-    const savedPgInstructor = await pgRepo.save(pgInstructor);
-
-    // Création dans SQLite
-    const sqliteInstructor = sqliteRepo.create({
-      id: savedPgInstructor.id, // Même ID
-      name,
-      email,
-      phone,
-      department
+    return res.status(500).json({
+      success: false,
+      message: 'Échec de la création de l\'instructeur - Erreur interne du serveur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
     });
-    await sqliteRepo.save(sqliteInstructor);
-
-    console.log(`✅ Instructor created in both databases: ${name} (ID: ${savedPgInstructor.id})`);
-    res.status(201).json(savedPgInstructor);
-  } catch (err) {
-    handleError(res, err, 'Failed to create instructor');
   }
 }
 
-// PUT /api/instructors/:id - Mettre à jour un instructeur
+// -------------------------------------------------------
+//   UPDATE INSTRUCTOR (PUT - remplacement complet)
+// -------------------------------------------------------
+// -------------------------------------------------------
+//   UPDATE INSTRUCTOR (PUT - remplacement complet - PostgreSQL seulement)
+// -------------------------------------------------------
 export async function updateInstructor(req: Request, res: Response) {
   try {
     const { id } = req.params;
     const { name, email, phone, department } = req.body;
 
-    // Validation
-    if (!name) {
-      return badRequest(res, 'Instructor name is required');
+    // -------- VALIDATION ID --------
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
     }
 
-    // EXIGER les deux bases de données
-    if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for instructor update' 
-      });
+    // -------- VALIDATIONS CHAMPS --------
+    if (!name || typeof name !== 'string') {
+      return badRequest(res, 'Le nom de l\'instructeur est requis.');
     }
 
-    // Vérifier l'existence dans les deux bases
-    const pgRepo = pgDataSource.getRepository(Instructor);
-    const sqliteRepo = sqliteDataSource.getRepository(Instructor);
-
-    const pgInstructor = await pgRepo.findOne({ where: { id } });
-    const sqliteInstructor = await sqliteRepo.findOne({ where: { id } });
-
-    if (!pgInstructor && !sqliteInstructor) {
-      return notFound(res, 'Instructor not found in any database');
+    const trimmedName = name.trim();
+    if (trimmedName.length < 2) {
+      return badRequest(res, 'Le nom de l\'instructeur doit contenir au moins 2 caractères.');
     }
 
-    if (pgInstructor && !sqliteInstructor) {
-      return notFound(res, 'Instructor found in PostgreSQL but not in SQLite');
+    if (trimmedName.length > 100) {
+      return badRequest(res, 'Le nom de l\'instructeur ne peut pas dépasser 100 caractères.');
     }
 
-    if (!pgInstructor && sqliteInstructor) {
-      return notFound(res, 'Instructor found in SQLite but not in PostgreSQL');
-    }
-
-    // Vérifier les conflits de nom (si le nom change)
-    if (name !== pgInstructor!.name) {
-      const existingWithSameName = await pgRepo.findOne({ where: { name } });
-      if (existingWithSameName && existingWithSameName.id !== id) {
-        return conflict(res, 'Another instructor with this name already exists');
+    // Validation email si fourni
+    if (email && typeof email === 'string') {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return badRequest(res, 'Format d\'email invalide.');
       }
     }
 
-    // Mise à jour PostgreSQL
-    pgRepo.merge(pgInstructor!, { name, email, phone, department });
-    const updatedPgInstructor = await pgRepo.save(pgInstructor!);
+    // Validation téléphone si fourni
+    if (phone && typeof phone === 'string' && phone.trim().length > 20) {
+      return badRequest(res, 'Le numéro de téléphone ne peut pas dépasser 20 caractères.');
+    }
 
-    // Mise à jour SQLite
-    sqliteRepo.merge(sqliteInstructor!, { name, email, phone, department });
-    await sqliteRepo.save(sqliteInstructor!);
+    // Vérifier disponibilité PostgreSQL SEULEMENT
+    if (!pgDataSource?.isInitialized) {
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
+    }
 
-    console.log(`✅ Instructor updated in both databases: ${id}`);
-    res.json(updatedPgInstructor);
-  } catch (err) {
-    handleError(res, err, 'Failed to update instructor');
+    const pgRepo = pgDataSource.getRepository(Instructor);
+
+    // -------- VÉRIFICATION EXISTENCE INSTRUCTEUR --------
+    console.log(`🔄 Recherche de l'instructeur à mettre à jour - ID: ${id}`);
+    const pgInstructor = await pgRepo.findOne({ where: { id } });
+
+    if (!pgInstructor) {
+      console.warn(`⚠️ Tentative de mise à jour d'un instructeur inexistant - ID: ${id}`);
+      return notFound(res, `Instructeur avec l'ID "${id}" introuvable.`);
+    }
+
+    // -------- VÉRIFICATION DOUBLON NOM --------
+    if (trimmedName !== pgInstructor.name) {
+      const existingWithSameName = await pgRepo.findOne({ 
+        where: { name: trimmedName } 
+      });
+      
+      if (existingWithSameName && existingWithSameName.id !== id) {
+        console.warn(`⚠️ Conflit de nom lors de la mise à jour - ID: ${id}, Nom: "${trimmedName}"`);
+        return conflict(res, `Un autre instructeur avec le nom "${trimmedName}" existe déjà.`);
+      }
+    }
+
+    // -------- SAUVEGARDE ANCIEN NOM POUR LOGS --------
+    const oldName = pgInstructor.name;
+
+    // -------- MISE À JOUR POSTGRESQL --------
+    console.log(`🔄 Mise à jour PostgreSQL - ID: ${id}, Ancien: "${oldName}", Nouveau: "${trimmedName}"`);
+    pgRepo.merge(pgInstructor, {
+      name: trimmedName,
+      email: email?.trim() || undefined,
+      phone: phone?.trim() || undefined,
+      department: department?.trim() || undefined
+    });
+    const updatedPgInstructor = await pgRepo.save(pgInstructor);
+    console.log(`✅ Instructeur mis à jour - ID: ${id}`);
+
+    // -------- RÉPONSE DE SUCCÈS --------
+    console.log(`🎉 Instructeur mis à jour avec succès - ID: ${id}`);
+    return res.status(200).json({
+      success: true,
+      message: `Instructeur mis à jour avec succès de "${oldName}" vers "${trimmedName}"`,
+      data: updatedPgInstructor,
+      details: {
+        id,
+        oldName,
+        newName: trimmedName,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la mise à jour de l\'instructeur:', err);
+    
+    if (isDatabaseError(err) && err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Un autre instructeur avec ce nom existe déjà',
+        error: 'DUPLICATE_INSTRUCTOR_NAME'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Échec de la mise à jour de l\'instructeur - Erreur interne du serveur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
+    });
   }
 }
 
-// PATCH /api/instructors/:id - Mettre à jour partiellement un instructeur
+// -------------------------------------------------------
+//   PATCH INSTRUCTOR (mise à jour partielle - PostgreSQL seulement)
+// -------------------------------------------------------
 export async function patchInstructor(req: Request, res: Response) {
   try {
     const { id } = req.params;
     const updates = req.body;
 
-    // Validation: au moins un champ à mettre à jour
-    if (Object.keys(updates).length === 0) {
-      return badRequest(res, 'No fields to update provided');
+    // -------- VALIDATION ID --------
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
     }
 
-    // Champs autorisés
+    // -------- VALIDATION UPDATES --------
+    if (!updates || Object.keys(updates).length === 0) {
+      return badRequest(res, 'Aucun champ à mettre à jour fourni.');
+    }
+
+    // Champs autorisés avec validation
     const allowedFields = ['name', 'email', 'phone', 'department'];
     const invalidFields = Object.keys(updates).filter(field => !allowedFields.includes(field));
     
     if (invalidFields.length > 0) {
-      return badRequest(res, `Invalid fields: ${invalidFields.join(', ')}`);
+      return badRequest(res, `Champs invalides: ${invalidFields.join(', ')}. Champs autorisés: ${allowedFields.join(', ')}`);
     }
 
-    // EXIGER les deux bases de données
+    // Validation spécifique des champs
+    if (updates.name) {
+      if (typeof updates.name !== 'string') {
+        return badRequest(res, 'Le nom doit être une chaîne de caractères.');
+      }
+      const trimmedName = updates.name.trim();
+      if (trimmedName.length < 2) {
+        return badRequest(res, 'Le nom doit contenir au moins 2 caractères.');
+      }
+      if (trimmedName.length > 100) {
+        return badRequest(res, 'Le nom ne peut pas dépasser 100 caractères.');
+      }
+      updates.name = trimmedName;
+    }
+
+    if (updates.email && typeof updates.email === 'string') {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updates.email.trim())) {
+        return badRequest(res, 'Format d\'email invalide.');
+      }
+      updates.email = updates.email.trim();
+    }
+
+    if (updates.phone && typeof updates.phone === 'string') {
+      if (updates.phone.trim().length > 20) {
+        return badRequest(res, 'Le numéro de téléphone ne peut pas dépasser 20 caractères.');
+      }
+      updates.phone = updates.phone.trim();
+    }
+
+    if (updates.department && typeof updates.department === 'string') {
+      updates.department = updates.department.trim();
+    }
+
+    // Vérifier disponibilité PostgreSQL SEULEMENT
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for instructor update' 
-      });
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
     }
 
-    // Vérifier l'existence dans les deux bases
     const pgRepo = pgDataSource.getRepository(Instructor);
-    const sqliteRepo = sqliteDataSource.getRepository(Instructor);
 
+    // -------- VÉRIFICATION EXISTENCE INSTRUCTEUR --------
+    console.log(`🔄 Recherche de l'instructeur à patcher - ID: ${id}`);
     const pgInstructor = await pgRepo.findOne({ where: { id } });
-    const sqliteInstructor = await sqliteRepo.findOne({ where: { id } });
 
-    if (!pgInstructor && !sqliteInstructor) {
-      return notFound(res, 'Instructor not found in any database');
+    if (!pgInstructor) {
+      console.warn(`⚠️ Tentative de modification d'un instructeur inexistant - ID: ${id}`);
+      return notFound(res, `Instructeur avec l'ID "${id}" introuvable.`);
     }
 
-    if (pgInstructor && !sqliteInstructor) {
-      return notFound(res, 'Instructor found in PostgreSQL but not in SQLite');
-    }
-
-    if (!pgInstructor && sqliteInstructor) {
-      return notFound(res, 'Instructor found in SQLite but not in PostgreSQL');
-    }
-
-    // Vérifier les conflits de nom (si le nom est modifié)
-    if (updates.name && updates.name !== pgInstructor!.name) {
-      const existingWithSameName = await pgRepo.findOne({ where: { name: updates.name } });
+    // -------- VÉRIFICATION DOUBLON NOM --------
+    if (updates.name && updates.name !== pgInstructor.name) {
+      const existingWithSameName = await pgRepo.findOne({ 
+        where: { name: updates.name } 
+      });
+      
       if (existingWithSameName && existingWithSameName.id !== id) {
-        return conflict(res, 'Another instructor with this name already exists');
+        console.warn(`⚠️ Conflit de nom lors du patch - ID: ${id}, Nom: "${updates.name}"`);
+        return conflict(res, `Un autre instructeur avec le nom "${updates.name}" existe déjà.`);
       }
     }
 
-    // Mise à jour PostgreSQL
-    pgRepo.merge(pgInstructor!, updates);
-    const updatedPgInstructor = await pgRepo.save(pgInstructor!);
+    // -------- SAUVEGARDE ANCIEN NOM POUR LOGS --------
+    const oldName = pgInstructor.name;
 
-    // Mise à jour SQLite
-    sqliteRepo.merge(sqliteInstructor!, updates);
-    await sqliteRepo.save(sqliteInstructor!);
+    // -------- MISE À JOUR POSTGRESQL --------
+    console.log(`🔄 Patch PostgreSQL - ID: ${id}`);
+    pgRepo.merge(pgInstructor, updates);
+    const updatedPgInstructor = await pgRepo.save(pgInstructor);
+    console.log(`✅ Instructeur patché - ID: ${id}`);
 
-    console.log(`✅ Instructor patched in both databases: ${id}`);
-    res.json(updatedPgInstructor);
-  } catch (err) {
-    handleError(res, err, 'Failed to patch instructor');
+    // -------- RÉPONSE DE SUCCÈS --------
+    console.log(`🎉 Instructeur modifié avec succès - ID: ${id}`);
+    return res.status(200).json({
+      success: true,
+      message: 'Instructeur modifié avec succès',
+      data: updatedPgInstructor,
+      details: {
+        id,
+        oldName,
+        newName: updates.name || oldName,
+        updatedFields: Object.keys(updates),
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la modification de l\'instructeur:', err);
+    
+    if (isDatabaseError(err) && err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Un autre instructeur avec ce nom existe déjà',
+        error: 'DUPLICATE_INSTRUCTOR_NAME'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Échec de la modification de l\'instructeur - Erreur interne du serveur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
+    });
   }
 }
 
-// DELETE /api/instructors/:id - Supprimer un instructeur
+// -------------------------------------------------------
+//   DELETE INSTRUCTOR (PostgreSQL seulement)
+// -------------------------------------------------------
 export async function deleteInstructor(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // EXIGER les deux bases de données
+    // -------- VALIDATION ID --------
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
+    }
+
+    // -------- VÉRIFICATION DISPONIBILITÉ POSTGRESQL --------
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for instructor deletion' 
-      });
+      return serviceUnavailable(res, 'Service temporairement indisponible - Base de données PostgreSQL non accessible');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
-    const sqliteRepo = sqliteDataSource.getRepository(Instructor);
 
-    // Vérifier l'existence dans les deux bases
+    // -------- VÉRIFICATION EXISTENCE INSTRUCTEUR --------
+    console.log(`🔄 Recherche de l'instructeur à supprimer - ID: ${id}`);
     const pgInstructor = await pgRepo.findOne({ 
       where: { id },
-      relations: ['courses', 'office'] // Vérifier les relations avant suppression
+      relations: ['courses', 'places'] // Vérifier les relations avant suppression
     });
-    const sqliteInstructor = await sqliteRepo.findOne({ where: { id } });
 
-    if (!pgInstructor && !sqliteInstructor) {
-      return notFound(res, 'Instructor not found in any database');
+    if (!pgInstructor) {
+      console.warn(`⚠️ Tentative de suppression d'un instructeur inexistant - ID: ${id}`);
+      return notFound(res, `Instructeur avec l'ID "${id}" introuvable. Aucune action effectuée.`);
     }
 
-    // Vérifier les contraintes de clé étrangère
-    if (pgInstructor) {
-      if (pgInstructor.courses && pgInstructor.courses.length > 0) {
-        return badRequest(res, 'Cannot delete instructor with associated courses');
-      }
-      
-      if (pgInstructor.places) {
-        return badRequest(res, 'Cannot delete instructor with assigned office');
-      }
-    }
+    // -------- SAUVEGARDE INFOS POUR LOGS --------
+    const instructorName = pgInstructor.name;
 
-    // Supprimer de PostgreSQL
-    if (pgInstructor) {
-      await pgRepo.remove(pgInstructor);
-    }
-
-    // Supprimer de SQLite
-    if (sqliteInstructor) {
-      await sqliteRepo.remove(sqliteInstructor);
-    }
-
-    console.log(`✅ Instructor deleted from both databases: ${id}`);
-    res.status(204).send();
-  } catch (err) {
-    // Gestion spécifique des erreurs de contrainte de clé étrangère
-    if (err instanceof Error && err.message.includes('foreign key constraint')) {
-      return res.status(400).json({
-        message: 'Cannot delete instructor due to existing references in other tables'
+    // -------- VÉRIFICATION CONTRAINTES RÉFÉRENTIELLES --------
+    if (pgInstructor.courses && pgInstructor.courses.length > 0) {
+      const courseCount = pgInstructor.courses.length;
+      console.warn(`⚠️ Tentative de suppression d'un instructeur avec cours associés - ID: ${id}, Cours: ${courseCount}`);
+      return res.status(409).json({
+        success: false,
+        message: `Impossible de supprimer cet instructeur car il est associé à ${courseCount} cours`,
+        error: 'INSTRUCTOR_IN_USE_COURSES',
+        details: {
+          associatedCourses: courseCount,
+          instructorName: instructorName,
+          suggestion: 'Réassignez ou supprimez d\'abord les cours associés avant de supprimer l\'instructeur'
+        }
       });
     }
-    handleError(res, err, 'Failed to delete instructor');
+
+    if (pgInstructor.places && pgInstructor.places.length > 0) {
+      const placeCount = pgInstructor.places.length;
+      console.warn(`⚠️ Tentative de suppression d'un instructeur avec bureaux associés - ID: ${id}, Bureaux: ${placeCount}`);
+      return res.status(409).json({
+        success: false,
+        message: `Impossible de supprimer cet instructeur car il est associé à ${placeCount} bureau(x)`,
+        error: 'INSTRUCTOR_IN_USE_OFFICES',
+        details: {
+          associatedOffices: placeCount,
+          instructorName: instructorName,
+          suggestion: 'Réassignez d\'abord les bureaux associés avant de supprimer l\'instructeur'
+        }
+      });
+    }
+
+    // -------- SUPPRESSION POSTGRESQL --------
+    console.log(`🔄 Suppression de l'instructeur - ID: ${id}, Nom: "${instructorName}"`);
+    await pgRepo.remove(pgInstructor);
+    console.log(`✅ Instructeur supprimé - ID: ${id}`);
+
+    // -------- RÉPONSE DE SUCCÈS --------
+    console.log(`🎉 Instructeur supprimé avec succès - ID: ${id}, Nom: "${instructorName}"`);
+
+    return res.status(200).json({
+      success: true,
+      message: `Instructeur "${instructorName}" supprimé avec succès`,
+      details: {
+        id,
+        name: instructorName,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (err: unknown) {
+    console.error('❌ Erreur critique lors de la suppression de l\'instructeur:', err);
+    
+    // Gestion spécifique des erreurs de contrainte référentielle
+    if (isDatabaseError(err) && (err.code === '23503' || getErrorMessage(err).includes('foreign key constraint'))) {
+      return res.status(409).json({
+        success: false,
+        message: 'Impossible de supprimer cet instructeur car il est référencé dans d\'autres tables',
+        error: 'FOREIGN_KEY_CONSTRAINT',
+        details: {
+          suggestion: 'Vérifiez et supprimez d\'abord toutes les références à cet instructeur'
+        }
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Échec de la suppression de l\'instructeur - Erreur interne du serveur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined
+    });
   }
 }
-
-// GET /api/instructors/:id/courses - Récupérer les cours d'un instructeur
+// -------------------------------------------------------
+//   GET INSTRUCTOR COURSES
+// -------------------------------------------------------
 export async function getInstructorCourses(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // EXIGER PostgreSQL pour les relations
+    // -------- VALIDATION ID --------
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
+    }
+
+    // Vérifier disponibilité PostgreSQL
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching instructor courses' 
-      });
+      return serviceUnavailable(res, 'PostgreSQL requis pour récupérer les cours de l\'instructeur');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
@@ -343,43 +636,90 @@ export async function getInstructorCourses(req: Request, res: Response) {
     });
 
     if (!instructor) {
-      return notFound(res, 'Instructor not found');
+      return notFound(res, 'Instructeur non trouvé');
     }
 
-    res.json(instructor.courses || []);
-  } catch (err) {
-    handleError(res, err, 'Failed to fetch instructor courses');
+    const courses = instructor.courses || [];
+    
+    console.log(`✅ ${courses.length} cours récupérés pour l'instructeur - ID: ${id}`);
+    return res.status(200).json({
+      success: true,
+      message: `Liste des cours récupérée avec succès (${courses.length} éléments)`,
+      data: courses,
+      count: courses.length,
+      instructor: {
+        id: instructor.id,
+        name: instructor.name
+      }
+    });
+  } catch (err: unknown) {
+    console.error('❌ Erreur lors de la récupération des cours de l\'instructeur:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des cours de l\'instructeur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined,
+      data: []
+    });
   }
 }
 
-// GET /api/instructors/:id/office - Récupérer le bureau d'un instructeur
+// -------------------------------------------------------
+//   GET INSTRUCTOR OFFICE
+// -------------------------------------------------------
 export async function getInstructorOffice(req: Request, res: Response) {
   try {
     const { id } = req.params;
 
-    // EXIGER PostgreSQL pour les relations
+    // -------- VALIDATION ID --------
+    if (!id || typeof id !== 'string') {
+      return badRequest(res, 'ID d\'instructeur invalide.');
+    }
+
+    // Vérifier disponibilité PostgreSQL
     if (!pgDataSource?.isInitialized) {
-      return res.status(500).json({ 
-        message: 'PostgreSQL required for fetching instructor office' 
-      });
+      return serviceUnavailable(res, 'PostgreSQL requis pour récupérer le bureau de l\'instructeur');
     }
 
     const pgRepo = pgDataSource.getRepository(Instructor);
     const instructor = await pgRepo.findOne({
       where: { id },
-      relations: ['office', 'office.category']
+      relations: ['places', 'places.category'] // CORRECTION: 'places' au lieu de 'office'
     });
 
     if (!instructor) {
-      return notFound(res, 'Instructor not found');
+      return notFound(res, 'Instructeur non trouvé');
     }
 
-    if (!instructor.places) {
-      return notFound(res, 'Instructor does not have an assigned office');
+    const offices = instructor.places || [];
+    
+    if (offices.length === 0) {
+      console.log(`ℹ️ Aucun bureau trouvé pour l'instructeur - ID: ${id}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Aucun bureau assigné à cet instructeur',
+        data: [],
+        count: 0
+      });
     }
 
-    res.json(instructor.places);
-  } catch (err) {
-    handleError(res, err, 'Failed to fetch instructor office');
+    console.log(`✅ ${offices.length} bureau(x) trouvé(s) pour l'instructeur - ID: ${id}`);
+    return res.status(200).json({
+      success: true,
+      message: `Bureau(s) récupéré(s) avec succès (${offices.length} élément(s))`,
+      data: offices,
+      count: offices.length,
+      instructor: {
+        id: instructor.id,
+        name: instructor.name
+      }
+    });
+  } catch (err: unknown) {
+    console.error('❌ Erreur lors de la récupération du bureau de l\'instructeur:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération du bureau de l\'instructeur',
+      error: process.env.NODE_ENV === 'development' ? getErrorMessage(err) : undefined,
+      data: []
+    });
   }
 }

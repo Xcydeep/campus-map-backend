@@ -1,4 +1,3 @@
-// Dans routes/courses.ts
 import { Router } from 'express';
 import {
   listCourses,
@@ -10,18 +9,25 @@ import {
   getCoursesNow,
   getCoursesByInstructor
 } from '../controllers/coursesController';
+import { requireAdminAuth, requireAuth} from '../middleware/jwtAuth';
+
+
 
 const router = Router();
 
-router.get('/', listCourses);
-router.get('/now', getCoursesNow);
-router.get('/:id', getCourseById);
-router.get('/place/:placeId/today', getCoursesForPlaceToday);
-router.get('/instructor/:instructorId', getCoursesByInstructor);
+router.get('/', requireAuth, listCourses);
+router.get('/now', requireAuth, getCoursesNow);
+router.get('/:id', requireAuth, getCourseById);
+router.get('/place/:placeId/today', requireAuth, getCoursesForPlaceToday);
+router.get('/instructor/:instructorId', requireAuth, getCoursesByInstructor);
 
 // Routes admin (à mettre dans adminRoutes)
-router.post('/', createCourse);
-router.put('/:id', updateCourse);
-router.delete('/:id', deleteCourse);
+router.post('/', requireAdminAuth, createCourse);
+router.put('/:id', requireAdminAuth, updateCourse);
+router.delete('/:id', requireAdminAuth, deleteCourse);
+
+
+
+
 
 export default router;
